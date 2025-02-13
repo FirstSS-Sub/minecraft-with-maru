@@ -93,7 +93,7 @@ resource "google_compute_disk" "minecraft" {
 
 # Compute Engineインスタンス
 resource "google_compute_instance" "minecraft" {
-  name         = "minecraft-server"
+  name         = var.instance_name
   machine_type = "e2-standard-2"
   zone         = var.zone
 
@@ -119,7 +119,10 @@ resource "google_compute_instance" "minecraft" {
     }
   }
 
-  metadata_startup_script = file("${path.module}/startup-script.sh")
+  metadata = {
+    startup-script  = file("${path.module}/scripts/startup-script.sh")
+    shutdown-script = "systemctl stop minecraft"
+  }
 
   tags = ["minecraft-server"]
 

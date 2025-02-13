@@ -68,18 +68,22 @@ class MinecraftBot(commands.Bot):
         if user.bot:
             return
             
-        if str(reaction.emoji.id) == START_EMOJI_ID:  # サーバー起動
-            await reaction.message.channel.send("サーバーを起動します...")
+        # カスタム絵文字でない場合はスキップ
+        if reaction.emoji.id is None:
+            return
+            
+        if reaction.emoji.id == START_EMOJI_ID:  # サーバー起動
+            await reaction.message.channel.send("サーバーを起動するね...")
             await self.start_server()
             
-        elif str(reaction.emoji.id) == STOP_EMOJI_ID:  # サーバー停止
-            await reaction.message.channel.send("サーバーを停止します...")
+        elif reaction.emoji.id == STOP_EMOJI_ID:  # サーバー停止
+            await reaction.message.channel.send("サーバーを停止するね...")
             await self.stop_server()
             
-        elif str(reaction.emoji.id) == STATUS_EMOJI_ID:  # サーバー状態確認
+        elif reaction.emoji.id == STATUS_EMOJI_ID:  # サーバー状態確認
             await self.check_status(reaction.message.channel)
             
-        elif str(reaction.emoji.id) == COSTS_EMOJI_ID:  # コスト確認
+        elif reaction.emoji.id == COSTS_EMOJI_ID:  # コスト確認
             await self.get_monthly_costs(reaction.message.channel)
 
     async def start_server(self):

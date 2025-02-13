@@ -1,1 +1,1 @@
-# minecraft-server
+# minecraft-with-maru

@@ -69,9 +69,9 @@ resource "google_compute_firewall" "minecraft" {
   target_tags   = ["minecraft-server"]
 }
 
-# ファイアウォールルール（SSH用）
-resource "google_compute_firewall" "ssh" {
-  name    = "allow-ssh"
+# ファイアウォールルール（minecraft-server SSH用）
+resource "google_compute_firewall" "minecraft_server_ssh" {
+  name    = "allow-ssh-minecraft-server"
   network = google_compute_network.minecraft.name
 
   allow {
@@ -81,6 +81,20 @@ resource "google_compute_firewall" "ssh" {
 
   source_ranges = ["0.0.0.0/0"]
   target_tags   = ["minecraft-server"]
+}
+
+# ファイアウォールルール（Discord Bot SSH用）
+resource "google_compute_firewall" "discord_bot_ssh" {
+  name    = "allow-ssh-discord-bot"
+  network = google_compute_network.minecraft.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["discord-bot"]
 }
 
 # 永続ディスク
@@ -120,7 +134,7 @@ resource "google_compute_instance" "minecraft" {
   }
 
   metadata = {
-    startup-script  = file("${path.module}/scripts/startup-script.sh")
+    startup-script-url  = "gs://${google_storage_bucket.minecraft.name}/${google_storage_bucket_object.startup_script.name}"
     shutdown-script = "systemctl stop minecraft"
   }
 
@@ -132,12 +146,18 @@ resource "google_compute_instance" "minecraft" {
   }
 }
 
+# startup_script の保存用 GCS
+resource "google_storage_bucket_object" "startup_script" {
+  name   = "startup-script.sh"
+  bucket = google_storage_bucket.minecraft.name
+  source = "${path.module}/scripts/startup-script.sh"
+}
+
 # Discord Bot用のインスタンス
 resource "google_compute_instance" "discord_bot" {
   name         = "discord-bot"
   machine_type = "e2-micro"
-  zone         = "us-central1-a"  # Always Free対象リージョン
-
+  zone         = "us-west1-a" # Always Free対象リージョン
   boot_disk {
     initialize_params {
       image = "ubuntu-os-cloud/ubuntu-2204-lts"
@@ -146,12 +166,8 @@ resource "google_compute_instance" "discord_bot" {
   }
 
   network_interface {
-    subnetwork = google_compute_subnetwork.minecraft.self_link
+    subnetwork    = google_compute_subnetwork.discord_bot.self_link
     access_config {}
-  }
-
-  metadata = {
-    startup-script = file("${path.module}/scripts/bot-startup.sh")
   }
 
   service_account {
@@ -160,4 +176,12 @@ resource "google_compute_instance" "discord_bot" {
   }
 
   tags = ["discord-bot"]
+}
+
+# 新しいサブネット（Discord Bot用）
+resource "google_compute_subnetwork" "discord_bot" {
+  name          = "discord-bot-subnet"
+  ip_cidr_range = "10.1.0.0/24"
+  network       = google_compute_network.minecraft.self_link
+  region        = "us-west1"
 }

@@ -1,26 +1,25 @@
 import os
 import discord
 from discord.ext import commands
+from discord import app_commands
 import asyncio
 from google.cloud import compute_v1
 from google.cloud import monitoring_v3
 from google.cloud import storage
-from google.cloud import billing
-import datetime
 from mcstatus import JavaServer
 import json
 from config import (
-    DISCORD_TOKEN, 
+    DISCORD_TOKEN,
     DISCORD_CHANNEL_ID as CHANNEL_ID,
     GCP_PROJECT_ID,
     INSTANCE_NAME,
     ZONE,
-    COSTS,
     START_EMOJI_ID,
     STOP_EMOJI_ID,
     STATUS_EMOJI_ID,
     COSTS_EMOJI_ID
 )
+import datetime
 from datetime import timezone
 import aiohttp
 import logging
@@ -40,17 +39,15 @@ class MinecraftBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.reactions = True
-        super().__init__(command_prefix='!', intents=intents)
-        
+        super().__init__(command_prefix=None, intents=intents)
+
         self.project_id = GCP_PROJECT_ID
         self.zone = ZONE
         self.instance_name = INSTANCE_NAME
-        
+
         self.instance_client = compute_v1.InstancesClient()
         self.monitoring_client = monitoring_v3.MetricServiceClient()
         self.storage_client = storage.Client()
-        self.billing_client = billing.CloudBillingClient()
-        self.compute_client = compute_v1.ComputeClient()
         self.last_player_time = None
         self.shutdown_task = None
         self.last_rate_update = None
@@ -62,27 +59,28 @@ class MinecraftBot(commands.Bot):
     @commands.Cog.listener()
     async def on_ready(self):
         print(f'{self.user} has connected to Discord!')
-        
+        await self.tree.sync()
+
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):
         if user.bot:
             return
-            
+
         # カスタム絵文字でない場合はスキップ
         if reaction.emoji.id is None:
             return
-            
+
         if reaction.emoji.id == START_EMOJI_ID:  # サーバー起動
             await reaction.message.channel.send("サーバーを起動するね...")
             await self.start_server()
-            
+
         elif reaction.emoji.id == STOP_EMOJI_ID:  # サーバー停止
             await reaction.message.channel.send("サーバーを停止するね...")
             await self.stop_server()
-            
+
         elif reaction.emoji.id == STATUS_EMOJI_ID:  # サーバー状態確認
             await self.check_status(reaction.message.channel)
-            
+
         elif reaction.emoji.id == COSTS_EMOJI_ID:  # コスト確認
             await self.get_monthly_costs(reaction.message.channel)
 
@@ -95,7 +93,7 @@ class MinecraftBot(commands.Bot):
             )
             operation = self.instance_client.start(request=request)
             operation.result()  # 完了を待つ
-            
+
             # IPアドレスの取得
             instance = self.instance_client.get(
                 project=self.project_id,
@@ -103,12 +101,12 @@ class MinecraftBot(commands.Bot):
                 instance=self.instance_name
             )
             ip_address = instance.network_interfaces[0].access_configs[0].nat_ip
-            
+
             await self.get_channel(CHANNEL_ID).send(
                 f"サーバーを起動したよ！\n"
                 f"IPアドレスは {ip_address} だよ！"
             )
-            
+
         except Exception as e:
             await self.get_channel(CHANNEL_ID).send(f"エラーが発生しちゃった... : {str(e)}")
 
@@ -119,7 +117,7 @@ class MinecraftBot(commands.Bot):
                 zone=self.zone,
                 instance=self.instance_name
             )
-            
+
             # SSHでワールドデータを圧縮
             ip_address = instance.network_interfaces[0].access_configs[0].nat_ip
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -127,24 +125,31 @@ class MinecraftBot(commands.Bot):
                 'cd /minecraft/server',
                 'tar -czf /tmp/world_backup.tar.gz world',
             ]
-            
+
             # GCSにアップロード
             bucket = self.storage_client.bucket(f"{self.project_id}-minecraft-backups")
             blob = bucket.blob(f"world_backup_{timestamp}.tar.gz")
-            
+
             # SCPでローカルに一時ダウンロード
             local_path = '/tmp/world_backup.tar.gz'
-            # Note: ここではssh-keyの設定が必要です
-            os.system(f'scp minecraft@{ip_address}:/tmp/world_backup.tar.gz {local_path}')
-            
+
+            # SCP コマンドを実行し、エラーをキャッチ
+            scp_command = f'scp minecraft@{ip_address}:/tmp/world_backup.tar.gz {local_path}'
+            result = os.system(scp_command)  # os.system の戻り値を取得
+
+            if result != 0:
+                logger.error(f"SCP コマンド実行中にエラーが発生しました (戻り値: {result})")
+                await self.get_channel(CHANNEL_ID).send("バックアップ中にエラーが発生しちゃった...")
+                return False
+
             # GCSにアップロード
             blob.upload_from_filename(local_path)
-            
+
             # 一時ファイルの削除
             os.remove(local_path)
-            
+
             return True
-            
+
         except Exception as e:
             print(f"バックアップ中にエラーが発生しました: {str(e)}")
             return False
@@ -154,10 +159,10 @@ class MinecraftBot(commands.Bot):
             # バックアップを実行
             backup_success = await self.backup_world()
             backup_message = "バックアップ成功だよ！" if backup_success else "バックアップ失敗しちゃった..."
-            
+
             # コスト計算
             cost_info = await self.calculate_costs()
-            
+
             request = compute_v1.StopInstanceRequest(
                 project=self.project_id,
                 zone=self.zone,
@@ -165,15 +170,14 @@ class MinecraftBot(commands.Bot):
             )
             operation = self.instance_client.stop(request=request)
             operation.result()
-            
+
             await self.get_channel(CHANNEL_ID).send(
                 f"サーバーを停止したよ！\n"
                 f"バックアップ: {backup_message}\n"
                 f"今回の稼働時間は {cost_info['runtime']} だったよ！\n"
                 f"今回の費用は ¥{cost_info['session_cost']:.2f} になったよ！\n"
-                f"今月の合計は ¥{cost_info['monthly_cost']:.2f} だよ！"
             )
-            
+
         except Exception as e:
             await self.get_channel(CHANNEL_ID).send(f"エラーが発生しちゃった... : {str(e)}")
 
@@ -186,13 +190,13 @@ class MinecraftBot(commands.Bot):
                     zone=self.zone,
                     instance=self.instance_name
                 )
-                
+
                 if instance.status == "RUNNING":
                     # サーバーが稼働中の場合、プレイヤー数をチェック
                     ip_address = instance.network_interfaces[0].access_configs[0].nat_ip
                     server = JavaServer(ip_address, 25565)
                     status = server.status()
-                    
+
                     if status.players.online == 0:
                         if self.last_player_time is None:
                             self.last_player_time = datetime.datetime.now()
@@ -201,71 +205,54 @@ class MinecraftBot(commands.Bot):
                             self.last_player_time = None
                     else:
                         self.last_player_time = None
-                        
+
             except Exception as e:
                 print(f"Error checking server status: {str(e)}")
-                
+
             await asyncio.sleep(60)  # 1分ごとにチェック
 
     async def get_current_rates(self):
         """現在の料金レートを取得する"""
-        # 1時間ごとにレート更新
-        now = datetime.datetime.now(timezone.utc)
-        if (self.last_rate_update is None or 
-            (now - self.last_rate_update).total_seconds() > 3600):
-            
-            try:
-                # SKUの情報を取得
-                skus_request = {
-                    "parent": f"services/6F81-5844-456A",  # Compute Engine service ID
-                    "filter": f"displayName:('Compute Instance Core' OR 'Storage PD Capacity')"
-                }
-                
-                rates = {
-                    'instance': 0,
-                    'disk': 0
-                }
-                
-                # インスタンスタイプとリージョンに基づいて料金を取得
-                instance_request = compute_v1.GetMachineTypeRequest(
-                    project=self.project_id,
-                    zone=self.zone,
-                    machine_type="e2-standard-2"
-                )
-                machine_type = self.instance_client.get(request=instance_request)
-                
-                for sku in self.billing_client.list_skus(request=skus_request):
-                    if "asia-northeast1" in sku.service_regions:
-                        if "Compute Instance Core" in sku.description:
-                            if "Preemptible" in sku.description:
-                                # vCPUあたりの料金 × vCPU数
-                                rates['instance'] = (
-                                    float(sku.pricing_info[0].pricing_expression.tiered_rates[0].unit_price.nanos) 
-                                    * 1e-9 
-                                    * machine_type.guest_cpus
-                                )
-                        elif "Storage PD Capacity" in sku.description:
-                            # GBあたりの料金 × ディスクサイズ
-                            rates['disk'] = (
-                                float(sku.pricing_info[0].pricing_expression.tiered_rates[0].unit_price.nanos) 
-                                * 1e-9 
-                                * 20  # 20GB
-                            )
-                
-                # USDからJPYへの換算
-                # 為替レートAPIを使用してより正確なレートを取得
-                exchange_rate = await self.get_exchange_rate()
-                rates = {k: v * exchange_rate for k, v in rates.items()}
-                
-                self.current_rates = rates
-                self.last_rate_update = now
-                
-            except Exception as e:
-                print(f"料金レート取得エラー: {str(e)}")
-                # エラー時は.envの値を使用
-                self.current_rates = COSTS
-                
-        return self.current_rates
+        try:
+            # gcloud コマンドを使用して料金を取得
+            cpu_cost, ram_cost = os.popen('gcloud compute machine-types describe e2-standard-2 --zone asia-northeast1 --format="value(hourlyCpuCost),value(hourlyRamCost)"').read().split(',')
+            disk_size, disk_cost = os.popen('gcloud compute disk-types describe pd-standard --zone asia-northeast1 --format="value(defaultDiskSizeGb),value(validDiskSizeGb)"').read().split(',')
+
+            # 料金を float に変換
+            cpu_cost = float(cpu_cost)
+            ram_cost = float(ram_cost)
+            disk_cost = float(disk_cost)
+
+            # インスタンス料金を計算
+            instance_cost = cpu_cost + ram_cost  # 1時間あたりのインスタンス料金
+
+            # ディスク料金を計算
+            disk_size = float(disk_size)  # ディスクのサイズ
+            monthly_disk_cost = disk_size * disk_cost  # 1ヶ月あたりのディスク料金
+
+            # 料金を格納
+            rates = {
+                'instance': instance_cost,  # 1時間あたりのインスタンス料金
+                'disk': monthly_disk_cost / (24 * 30),  # 1時間あたりのディスク料金（月額を時間換算）
+            }
+
+            # USDからJPYへの換算
+            exchange_rate = await self.get_exchange_rate()
+            rates = {k: v * exchange_rate for k, v in rates.items()}
+
+            return rates
+
+        except Exception as e:
+            print(f"料金レート取得エラー: {str(e)}")
+            # エラー時のデフォルト値を設定
+            rates = {
+                'instance': 0.0836,  # e2-standard-2 in asia-northeast1 (概算)
+                'disk': 0.000068  # pd-standard 20GB in asia-northeast1 (概算)
+            }
+            # USDからJPYへの換算
+            exchange_rate = await self.get_exchange_rate()
+            rates = {k: v * exchange_rate for k, v in rates.items()}
+            return rates
 
     async def get_exchange_rate(self):
         """現在のUSD/JPYレートを取得"""
@@ -285,75 +272,28 @@ class MinecraftBot(commands.Bot):
             zone=self.zone,
             instance=self.instance_name
         )
-        
+
         start_time = datetime.datetime.fromisoformat(instance.last_start_timestamp)
         runtime = datetime.datetime.now(timezone.utc) - start_time.replace(tzinfo=timezone.utc)
         hours = runtime.total_seconds() / 3600
-        
+
         # 現在のレートを取得
         rates = await self.get_current_rates()
         session_cost = hours * (rates['instance'] + rates['disk'])
-        
-        # 今月の初日を取得
-        now = datetime.datetime.now(timezone.utc)
-        first_day = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        
-        # 今月の総コストを取得
-        request = {
-            "name": f"projects/{self.project_id}",
-            "interval": {
-                "start_time": first_day.isoformat(),
-                "end_time": now.isoformat()
-            }
-        }
-        
-        try:
-            monthly_cost = 0
-            for cost in self.billing_client.get_project_costs(request):
-                monthly_cost += cost.cost
 
-            monthly_cost = monthly_cost * 110  # USDからJPYへの概算換算
-        except Exception as e:
-            print(f"月間コスト取得エラー: {str(e)}")
-            monthly_cost = session_cost  # エラー時は簡易計算
-        
         return {
             "runtime": str(runtime).split('.')[0],
             "session_cost": session_cost,
-            "monthly_cost": monthly_cost
         }
 
     async def get_monthly_costs(self, channel):
         """月間コストを取得して表示する関数"""
         try:
-            now = datetime.datetime.now(timezone.utc)
-            first_day = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            
-            request = {
-                "name": f"projects/{self.project_id}",
-                "interval": {
-                    "start_time": first_day.isoformat(),
-                    "end_time": now.isoformat()
-                }
-            }
-            
-            costs_by_service = {}
-            total_cost = 0
-            
-            for cost in self.billing_client.get_project_costs(request):
-                service = cost.service.name
-                amount = cost.cost * 110  # USDからJPYへの概算換算
-                costs_by_service[service] = amount
-                total_cost += amount
-            
-            # コスト情報を整形して送信
-            message = "今月の費用を報告するね！\n"
-            for service, cost in costs_by_service.items():
-                message += f"{service}: ¥{cost:.2f}\n"
-            message += f"\n合計で ¥{total_cost:.2f} になったよ！"
-            
+            cost_info = await self.calculate_costs()
+            message = f"現在の稼働時間は {cost_info['runtime']} で、\n"
+            message += f"現在のセッションの費用は ¥{cost_info['session_cost']:.2f} だよ！\n"
+            message += "月額の正確な合計は取得できないんだ。ごめんね。。"
             await channel.send(message)
-            
         except Exception as e:
             await channel.send(f"費用情報の取得中にエラーが発生しちゃった... : {str(e)}")
 
@@ -366,7 +306,7 @@ class MinecraftBot(commands.Bot):
                 instance=self.instance_name
             )
             status = "稼働中" if instance.status == "RUNNING" else "停止中"
-            
+
             if instance.status == "RUNNING":
                 ip_address = instance.network_interfaces[0].access_configs[0].nat_ip
                 try:
@@ -386,31 +326,30 @@ class MinecraftBot(commands.Bot):
                     )
             else:
                 await channel.send(f"サーバーは{status}だよ！")
-                
+
         except Exception as e:
             await channel.send(f"エラーが発生しちゃった... : {str(e)}")
 
-    @commands.command()
-    async def start(self, ctx):
-        """サーバーを起動するコマンド"""
-        await ctx.send("サーバーを起動するね...")
-        await self.start_server()
-
-    @commands.command()
-    async def stop(self, ctx):
-        """サーバーを停止するコマンド"""
-        await ctx.send("サーバーを停止するね...")
-        await self.stop_server()
-
-    @commands.command()
-    async def status(self, ctx):
-        """サーバーの状態を確認するコマンド"""
-        await self.check_status(ctx.channel)
-
-    @commands.command()
-    async def costs(self, ctx):
-        """月間コストを確認するコマンド"""
-        await self.get_monthly_costs(ctx.channel)
-
 bot = MinecraftBot()
+
+from discord import app_commands
+
+@bot.tree.command(name="start", description="サーバーを起動する")
+async def start_command(interaction: discord.Interaction):
+    await interaction.response.send_message("サーバーを起動するね...")
+    await bot.start_server()
+
+@bot.tree.command(name="stop", description="サーバーを停止する")
+async def stop_command(interaction: discord.Interaction):
+    await interaction.response.send_message("サーバーを停止します...")
+    await bot.stop_server()
+
+@bot.tree.command(name="status", description="サーバーの状態を確認する")
+async def status_command(interaction: discord.Interaction):
+    await bot.check_status(interaction.channel)
+
+@bot.tree.command(name="costs", description="月間コストを確認する")
+async def costs_command(interaction: discord.Interaction):
+    await bot.get_monthly_costs(interaction.channel)
+
 bot.run(DISCORD_TOKEN)

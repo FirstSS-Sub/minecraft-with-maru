@@ -17,14 +17,3 @@ variable "instance_name" {
   description = "Name for the Minecraft server instance"
   default     = "minecraft-server"
 }
-
-variable "discord_token" {
-  description = "Discord Bot Token"
-  type        = string
-  sensitive   = true
-}
-
-variable "discord_channel_id" {
-  description = "Discord Channel ID"
-  type        = string
-}

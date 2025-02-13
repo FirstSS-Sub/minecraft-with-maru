@@ -1,2 +1,51 @@
-key.json
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 環境変数・機密情報
 .env
+key.json
+*.pem
+*.key
+ssh_key*
+credentials.json
+
+# GCP
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+.terraform.lock.hcl
+
+# IDE/エディタ
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Minecraft関連
+/tmp/
+*.tar.gz
+world_backup_*
+
+# ログ
+*.log
+logs/

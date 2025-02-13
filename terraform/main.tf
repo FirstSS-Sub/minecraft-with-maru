@@ -131,3 +131,33 @@ resource "google_compute_instance" "minecraft" {
     scopes = ["storage-rw", "compute-ro"]  # GCSアクセス用とインスタンス情報取得用のスコープ
   }
 }
+
+# Discord Bot用のインスタンス
+resource "google_compute_instance" "discord_bot" {
+  name         = "discord-bot"
+  machine_type = "e2-micro"
+  zone         = "us-central1-a"  # Always Free対象リージョン
+
+  boot_disk {
+    initialize_params {
+      image = "ubuntu-os-cloud/ubuntu-2204-lts"
+      size  = 10
+    }
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.minecraft.self_link
+    access_config {}
+  }
+
+  metadata = {
+    startup-script = file("${path.module}/scripts/bot-startup.sh")
+  }
+
+  service_account {
+    email  = data.google_service_account.minecraft.email
+    scopes = ["storage-rw", "compute-rw"]
+  }
+
+  tags = ["discord-bot"]
+}

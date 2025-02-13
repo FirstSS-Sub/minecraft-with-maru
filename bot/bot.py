@@ -23,6 +23,17 @@ from config import (
 )
 from datetime import timezone
 import aiohttp
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('minecraft_bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger('minecraft_bot')
 
 class MinecraftBot(commands.Bot):
     def __init__(self):
@@ -89,10 +100,13 @@ class MinecraftBot(commands.Bot):
             )
             ip_address = instance.network_interfaces[0].access_configs[0].nat_ip
             
-            await self.get_channel(CHANNEL_ID).send(f"サーバーが起動しました！\nIP: {ip_address}")
+            await self.get_channel(CHANNEL_ID).send(
+                f"サーバーを起動したよ！\n"
+                f"IPアドレスは {ip_address} だよ！"
+            )
             
         except Exception as e:
-            await self.get_channel(CHANNEL_ID).send(f"エラーが発生しました: {str(e)}")
+            await self.get_channel(CHANNEL_ID).send(f"エラーが発生しちゃった... : {str(e)}")
 
     async def backup_world(self):
         try:
@@ -135,7 +149,7 @@ class MinecraftBot(commands.Bot):
         try:
             # バックアップを実行
             backup_success = await self.backup_world()
-            backup_message = "バックアップ成功" if backup_success else "バックアップ失敗"
+            backup_message = "バックアップ成功だよ！" if backup_success else "バックアップ失敗しちゃった..."
             
             # コスト計算
             cost_info = await self.calculate_costs()
@@ -149,15 +163,15 @@ class MinecraftBot(commands.Bot):
             operation.result()
             
             await self.get_channel(CHANNEL_ID).send(
-                f"サーバーを停止しました\n"
-                f"バックアップ状態: {backup_message}\n"
-                f"今回の稼働時間: {cost_info['runtime']}\n"
-                f"今回の費用: ¥{cost_info['session_cost']:.2f}\n"
-                f"今月の合計: ¥{cost_info['monthly_cost']:.2f}"
+                f"サーバーを停止したよ！\n"
+                f"バックアップ: {backup_message}\n"
+                f"今回の稼働時間は {cost_info['runtime']} だったよ！\n"
+                f"今回の費用は ¥{cost_info['session_cost']:.2f} になったよ！\n"
+                f"今月の合計は ¥{cost_info['monthly_cost']:.2f} だよ！"
             )
             
         except Exception as e:
-            await self.get_channel(CHANNEL_ID).send(f"エラーが発生しました: {str(e)}")
+            await self.get_channel(CHANNEL_ID).send(f"エラーが発生しちゃった... : {str(e)}")
 
     async def check_server_status(self):
         await self.wait_until_ready()
@@ -329,15 +343,15 @@ class MinecraftBot(commands.Bot):
                 total_cost += amount
             
             # コスト情報を整形して送信
-            message = "今月の費用詳細:\n"
+            message = "今月の費用を報告するね！\n"
             for service, cost in costs_by_service.items():
                 message += f"{service}: ¥{cost:.2f}\n"
-            message += f"\n合計: ¥{total_cost:.2f}"
+            message += f"\n合計で ¥{total_cost:.2f} になったよ！"
             
             await channel.send(message)
             
         except Exception as e:
-            await channel.send(f"費用情報の取得中にエラーが発生しました: {str(e)}")
+            await channel.send(f"費用情報の取得中にエラーが発生しちゃった... : {str(e)}")
 
     async def check_status(self, channel):
         """サーバーの状態を確認する共通関数"""
@@ -356,32 +370,32 @@ class MinecraftBot(commands.Bot):
                     status_info = server.status()
                     player_count = status_info.players.online
                     await channel.send(
-                        f"サーバーの状態: {status}\n"
-                        f"IP: {ip_address}\n"
-                        f"接続中のプレイヤー数: {player_count}人"
+                        f"サーバーは{status}だよ！\n"
+                        f"IPアドレスは {ip_address} だよ！\n"
+                        f"今は {player_count}人が遊んでるよ！"
                     )
                 except:
                     await channel.send(
-                        f"サーバーの状態: {status}\n"
-                        f"IP: {ip_address}\n"
-                        f"Minecraftサーバー応答なし"
+                        f"サーバーは{status}だよ！\n"
+                        f"IPアドレスは {ip_address} だよ！\n"
+                        f"でも、Minecraftサーバーが応答してくれないよ..."
                     )
             else:
-                await channel.send(f"サーバーの状態: {status}")
+                await channel.send(f"サーバーは{status}だよ！")
                 
         except Exception as e:
-            await channel.send(f"エラーが発生しました: {str(e)}")
+            await channel.send(f"エラーが発生しちゃった... : {str(e)}")
 
     @commands.command()
     async def start(self, ctx):
         """サーバーを起動するコマンド"""
-        await ctx.send("サーバーを起動します...")
+        await ctx.send("サーバーを起動するね...")
         await self.start_server()
 
     @commands.command()
     async def stop(self, ctx):
         """サーバーを停止するコマンド"""
-        await ctx.send("サーバーを停止します...")
+        await ctx.send("サーバーを停止するね...")
         await self.stop_server()
 
     @commands.command()

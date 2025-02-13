@@ -1,6 +1,8 @@
 import os
 import discord
 from discord.ext import commands
+import logging
+import requests
 from discord import app_commands
 import asyncio
 from google.cloud import compute_v1
@@ -100,14 +102,41 @@ class MinecraftBot(commands.Bot):
                 zone=self.zone,
                 instance=self.instance_name
             )
-            ip_address = instance.network_interfaces[0].access_configs[0].nat_ip
 
-            await self.get_channel(CHANNEL_ID).send(
-                f"サーバーを起動したよ！\n"
-                f"IPアドレスは {ip_address} だよ！"
-            )
+            ip_address = None
+            for interface in instance.network_interfaces:
+                if hasattr(interface, 'access_configs') and interface.access_configs:
+                    config = interface.access_configs[0]
+                    # 'nat_ip'の代わりに'external_ipv4'を使用
+                    ip_address = getattr(config, 'external_ipv4', None)
+                    if ip_address:
+                        break
+
+            # メタデータサーバーからIPアドレスを取得
+            if not ip_address:
+                try:
+                    metadata_url = "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
+                    headers = {"Metadata-Flavor": "Google"}
+                    response = requests.get(metadata_url, headers=headers, timeout=5)
+                    if response.status_code == 200:
+                        ip_address = response.text.strip()
+                        logging.info(f"IP address from metadata: {ip_address}")
+                except Exception as e:
+                    logging.error(f"Error fetching IP from metadata: {str(e)}")
+
+            if ip_address:
+                await self.get_channel(CHANNEL_ID).send(
+                    f"サーバーを起動したよ！\n"
+                    f"IPアドレスは {ip_address} だよ！"
+                )
+            else:
+                await self.get_channel(CHANNEL_ID).send(
+                    "サーバーを起動したけど、IPアドレスが見つからなかったよ..."
+                )
+                logging.error("IP address not found")
 
         except Exception as e:
+            logging.exception("Error in start_server")
             await self.get_channel(CHANNEL_ID).send(f"エラーが発生しちゃった... : {str(e)}")
 
     async def backup_world(self):
@@ -307,27 +336,63 @@ class MinecraftBot(commands.Bot):
             )
             status = "稼働中" if instance.status == "RUNNING" else "停止中"
 
+            # インスタンス情報のデバッグ出力
+            logging.info(f"Instance status: {instance.status}")
+            logging.info(f"Network interfaces: {instance.network_interfaces}")
+
             if instance.status == "RUNNING":
-                ip_address = instance.network_interfaces[0].access_configs[0].nat_ip
-                try:
-                    server = JavaServer(ip_address, 25565)
-                    status_info = server.status()
-                    player_count = status_info.players.online
-                    await channel.send(
-                        f"サーバーは{status}だよ！\n"
-                        f"IPアドレスは {ip_address} だよ！\n"
-                        f"今は {player_count}人が遊んでるよ！"
-                    )
-                except:
-                    await channel.send(
-                        f"サーバーは{status}だよ！\n"
-                        f"IPアドレスは {ip_address} だよ！\n"
-                        f"でも、Minecraftサーバーが応答してくれないよ..."
-                    )
+                # IPアドレスの取得方法を修正
+                ip_address = None
+                for interface in instance.network_interfaces:
+                    logging.info(f"Interface: {interface}")
+                    if hasattr(interface, 'access_configs'):
+                        for config in interface.access_configs:
+                            logging.info(f"Access config: {config}")
+                            if hasattr(config, 'nat_ip'):
+                                ip_address = config.nat_ip
+                            elif hasattr(config, 'external_ip'):
+                                ip_address = config.external_ip
+                            if ip_address:
+                                break
+                    if ip_address:
+                        break
+
+                # メタデータサーバーからIPアドレスを取得する試み
+                if not ip_address:
+                    try:
+                        metadata_url = "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
+                        headers = {"Metadata-Flavor": "Google"}
+                        response = requests.get(metadata_url, headers=headers, timeout=5)
+                        if response.status_code == 200:
+                            ip_address = response.text.strip()
+                            logging.info(f"IP address from metadata: {ip_address}")
+                    except Exception as e:
+                        logging.error(f"Error fetching IP from metadata: {str(e)}")
+
+                if ip_address:
+                    try:
+                        server = JavaServer(ip_address, 25565)
+                        status_info = server.status()
+                        player_count = status_info.players.online
+                        await channel.send(
+                            f"サーバーは{status}だよ！\n"
+                            f"IPアドレスは {ip_address} だよ！\n"
+                            f"今は {player_count}人が遊んでるよ！"
+                        )
+                    except Exception as e:
+                        await channel.send(
+                            f"サーバーは{status}だよ！\n"
+                            f"IPアドレスは {ip_address} だよ！\n"
+                            f"でも、Minecraftサーバーが応答してくれないよ... エラー: {str(e)}"
+                        )
+                else:
+                    await channel.send(f"サーバーは{status}だよ！でも、IPアドレスが見つからないよ...")
+                    logging.error("IP address not found in instance information")
             else:
                 await channel.send(f"サーバーは{status}だよ！")
 
         except Exception as e:
+            logging.exception("Error in check_status")
             await channel.send(f"エラーが発生しちゃった... : {str(e)}")
 
 bot = MinecraftBot()
@@ -341,7 +406,7 @@ async def start_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="stop", description="サーバーを停止する")
 async def stop_command(interaction: discord.Interaction):
-    await interaction.response.send_message("サーバーを停止します...")
+    await interaction.response.send_message("サーバーを停止するね...")
     await bot.stop_server()
 
 @bot.tree.command(name="status", description="サーバーの状態を確認する")

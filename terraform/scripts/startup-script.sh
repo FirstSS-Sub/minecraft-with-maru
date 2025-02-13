@@ -1,60 +1,80 @@
-#!/bin/bash
+#!/bin/sh
+
+# エラー時に停止
+set -e
+
+# サーバーディレクトリの設定
+SERVER_DIR="/opt/minecraft_server"
+mkdir -p $SERVER_DIR
+cd $SERVER_DIR
 
 # 必要なパッケージのインストール
-sudo apt-get update
-sudo apt-get install -y screen openjdk-17-jre-headless curl unzip
+yes | sudo apt update
+yes | sudo apt install -y openjdk-21-jdk screen wget unzip
 
-# Minecraftユーザーの作成（存在しない場合）
-if ! id "minecraft" &>/dev/null; then
-    sudo useradd -r -m -U -d /minecraft minecraft
+# Java 21をデフォルトに設定
+sudo update-alternatives --set java /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+
+# Forgeのダウンロードとインストール
+FORGE_VERSION="1.21.4-54.1.0"
+FORGE_INSTALLER="forge-${FORGE_VERSION}-installer.jar"
+FORGE_JAR="forge-${FORGE_VERSION}-server.jar"
+
+wget -O $FORGE_INSTALLER "https://maven.minecraftforge.net/net/minecraftforge/forge/${FORGE_VERSION}/forge-${FORGE_VERSION}-installer.jar"
+yes | java -jar $FORGE_INSTALLER --installServer
+
+# シムJARファイルを正しい名前にリネーム
+if [ -f "forge-${FORGE_VERSION}-shim.jar" ]; then
+    mv "forge-${FORGE_VERSION}-shim.jar" "$FORGE_JAR"
 fi
 
-# 必要なディレクトリの作成
-sudo mkdir -p /minecraft/server/mods
-sudo mkdir -p /minecraft/server/shaderpacks
-sudo chown -R minecraft:minecraft /minecraft
+# Complementary Unbound Shadersのダウンロードと配置
+SHADER_URL="https://cdn.modrinth.com/data/R6NEzAwj/versions/Z1zqMzjh/ComplementaryUnbound_r5.4.zip"
+wget -O ComplementaryUnbound.zip "$SHADER_URL"
+mkdir -p $SERVER_DIR/shaderpacks
+yes | unzip -o ComplementaryUnbound.zip -d $SERVER_DIR/shaderpacks/
 
-# Optifineのダウンロードとインストール
-sudo curl -o /minecraft/server/mods/OptiFine.jar https://optifine.net/downloadx?f=OptiFine_1.20.1_HD_U_I7.jar
+# EULAに同意
+echo "eula=true" > eula.txt
 
-# Complementary Shadersのダウンロード
-sudo curl -L -o /minecraft/server/shaderpacks/complementary.zip https://www.complementary.dev/download/
+# server.propertiesファイルの作成または修正
+if [ ! -f "server.properties" ]; then
+    echo "online-mode=false" > server.properties
+else
+    sed -i '/^online-mode=/c\online-mode=false' server.properties
+fi
 
-# シェーダーパックの展開
-sudo -u minecraft bash -c 'cd /minecraft/server/shaderpacks && unzip -o complementary.zip && rm complementary.zip'
-
-# 権限の設定
-sudo chown -R minecraft:minecraft /minecraft/server/mods
-sudo chown -R minecraft:minecraft /minecraft/server/shaderpacks
-
-# systemdサービスファイルを直接作成
-sudo tee /etc/systemd/system/minecraft.service > /dev/null << 'EOL'
+# systemdサービスファイルの作成
+sudo sh -c "cat > /etc/systemd/system/minecraft.service <<EOL
 [Unit]
 Description=Minecraft Server
 After=network.target
 
 [Service]
-WorkingDirectory=/minecraft/server
-User=minecraft
-Group=minecraft
-Type=simple
-
-ExecStart=/usr/bin/screen -DmS minecraft java -Xmx4G -Xms1G -jar server.jar nogui
-ExecStop=/usr/bin/screen -p 0 -S minecraft -X eval 'stuff "say サーバーを停止します..."\015'
-ExecStop=/usr/bin/screen -p 0 -S minecraft -X eval 'stuff "save-all"\015'
-ExecStop=/usr/bin/screen -p 0 -S minecraft -X eval 'stuff "stop"\015'
-ExecStop=/bin/sleep 10
-
+User=$USER
+Group=$USER
+WorkingDirectory=$SERVER_DIR
+ExecStart=/usr/lib/jvm/java-21-openjdk-amd64/bin/java -Xms2G -Xmx4G -jar $FORGE_JAR nogui
 Restart=on-failure
-RestartSec=60s
+RestartSec=10s
 
 [Install]
 WantedBy=multi-user.target
-EOL
+EOL"
+
+# ファイルのパーミッション設定
+chmod +x $FORGE_JAR
 
 # サービスの有効化と起動
 sudo systemctl daemon-reload
-sudo systemctl enable minecraft
-sudo systemctl start minecraft
+sudo systemctl enable minecraft.service
+sudo systemctl start minecraft.service
 
-echo "セットアップが完了しました"
+echo "Minecraftサーバーがインストールされ、起動しました。"
+echo "サービスのステータスを確認するには: sudo systemctl status minecraft.service"
+echo "サーバーログを確認するには: sudo journalctl -u minecraft.service -f"
+echo "Complementary Unbound Shadersがshaderpacks/フォルダにインストールされました。"
+echo "注意: オフラインモードが有効になっています。セキュリティに注意してください。"
+
+# ファイルの権限を確認
+ls -l $SERVER_DIR

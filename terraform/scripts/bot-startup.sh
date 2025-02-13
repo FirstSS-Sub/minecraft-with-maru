@@ -30,21 +30,21 @@ sudo pip3 install -r minecraft-with-maru/bot/requirements.txt
 # EOL
 
 # # systemdサービスの設定
-# sudo tee /etc/systemd/system/discord-bot.service << 'EOL'
-# [Unit]
-# Description=Discord Bot for Minecraft Server
-# After=network.target
+sudo tee /etc/systemd/system/discord-bot.service << 'EOL'
+[Unit]
+Description=Discord Bot for Minecraft Server
+After=network.target
 
-# [Service]
-# ExecStart=/usr/bin/python3 /opt/discord-bot/minecraft-with-maru/bot/bot.py
-# WorkingDirectory=/opt/discord-bot/minecraft-with-maru
-# User=root
-# Group=root
-# Restart=always
+[Service]
+ExecStart=/usr/bin/python3 /opt/discord-bot/minecraft-with-maru/bot/bot.py
+WorkingDirectory=/opt/discord-bot/minecraft-with-maru
+User=root
+Group=root
+Restart=always
 
-# [Install]
-# WantedBy=multi-user.target
-# EOL
+[Install]
+WantedBy=multi-user.target
+EOL
 
 # # サービスの有効化と起動
 # sudo systemctl daemon-reload

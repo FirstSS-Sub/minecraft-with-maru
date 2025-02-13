@@ -13,6 +13,11 @@ variable "zone" {
   default     = "asia-northeast1-a"
 }
 
+variable "instance_name" {
+  description = "Name for the Minecraft server instance"
+  default     = "minecraft-server"
+}
+
 variable "discord_token" {
   description = "Discord Bot Token"
   type        = string

@@ -140,73 +140,27 @@ class MinecraftBot(commands.Bot):
 
     async def backup_world(self):
         try:
-            instance = self.instance_client.get(
-                project=self.project_id,
-                zone=self.zone,
-                instance=self.instance_name
-            )
+            # GCSクライアントの初期化
+            storage_client = storage.Client()
+            bucket = storage_client.bucket('your-bucket-name')
 
-            # IPアドレスの取得
-            ip_address = None
-            for interface in instance.network_interfaces:
-                if hasattr(interface, 'access_configs') and interface.access_configs:
-                    config = interface.access_configs[0]
-                    ip_address = getattr(config, 'external_ipv4', None)
-                    if ip_address:
-                        break
+            # バックアップファイルの作成
+            backup_filename = f"world_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tar.gz"
+            minecraft_dir = "/path/to/minecraft/server"  # Minecraftサーバーのディレクトリを指定してね
+            os.system(f"tar -czf /tmp/{backup_filename} -C {minecraft_dir} world")
 
-            # メタデータサーバーからIPアドレスを取得
-            if not ip_address:
-                try:
-                    metadata_url = "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
-                    headers = {"Metadata-Flavor": "Google"}
-                    response = requests.get(metadata_url, headers=headers, timeout=5)
-                    if response.status_code == 200:
-                        ip_address = response.text.strip()
-                        logging.info(f"IP address from metadata: {ip_address}")
-                except Exception as e:
-                    logging.error(f"Error fetching IP from metadata: {str(e)}")
-
-            if not ip_address:
-                logging.error("IP address not found")
-                await self.get_channel(CHANNEL_ID).send("バックアップ中にエラーが発生しちゃった... IPアドレスが見つからないよ")
-                return False
-
-            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-
-            # SSHでワールドデータを圧縮
-            remote_commands = [
-                'cd /minecraft/server',
-                'tar -czf /tmp/world_backup.tar.gz world',
-            ]
-
-            # GCSにアップロード
-            bucket = self.storage_client.bucket(f"{self.project_id}-minecraft-backups")
-            blob = bucket.blob(f"world_backup_{timestamp}.tar.gz")
-
-            # SCPでローカルに一時ダウンロード
-            local_path = '/tmp/world_backup.tar.gz'
-
-            # SCP コマンドを実行し、エラーをキャッチ
-            scp_command = f'scp minecraft@{ip_address}:/tmp/world_backup.tar.gz {local_path}'
-            result = os.system(scp_command)  # os.system の戻り値を取得
-
-            if result != 0:
-                logger.error(f"SCP コマンド実行中にエラーが発生しました (戻り値: {result})")
-                await self.get_channel(CHANNEL_ID).send("バックアップ中にエラーが発生しちゃった...")
-                return False
-
-            # GCSにアップロード
-            blob.upload_from_filename(local_path)
+            # GCSへのアップロード
+            blob = bucket.blob(f"backups/{backup_filename}")
+            blob.upload_from_filename(f"/tmp/{backup_filename}")
 
             # 一時ファイルの削除
-            os.remove(local_path)
+            os.remove(f"/tmp/{backup_filename}")
 
+            await self.get_channel(CHANNEL_ID).send(f"ワールドのバックアップが完了したよ！ファイル名は {backup_filename} だよ！")
             return True
-
         except Exception as e:
             logging.exception(f"バックアップ中にエラーが発生しました: {str(e)}")
-            await self.get_channel(CHANNEL_ID).send(f"バックアップ中にエラーが発生しちゃった... : {str(e)}")
+            await self.get_channel(CHANNEL_ID).send(f"バックアップ中にエラーが起きちゃったみたい...\n{str(e)}")
             return False
 
     async def stop_server(self):
@@ -371,14 +325,11 @@ class MinecraftBot(commands.Bot):
                 ip_address = None
                 for interface in instance.network_interfaces:
                     logging.info(f"Interface: {interface}")
-                    if hasattr(interface, 'access_configs'):
+                    if interface.access_configs:
                         for config in interface.access_configs:
                             logging.info(f"Access config: {config}")
-                            if hasattr(config, 'nat_ip'):
+                            if config.type == 'ONE_TO_ONE_NAT':
                                 ip_address = config.nat_ip
-                            elif hasattr(config, 'external_ip'):
-                                ip_address = config.external_ip
-                            if ip_address:
                                 break
                     if ip_address:
                         break
@@ -397,8 +348,8 @@ class MinecraftBot(commands.Bot):
 
                 if ip_address:
                     try:
-                        server = JavaServer(ip_address, 25565)
-                        status_info = server.status()
+                        server = JavaServer(ip_address, 25565, timeout=5)  # タイムアウトを5秒に設定
+                        status_info = await server.async_status() # async対応
                         player_count = status_info.players.online
                         await channel.send(
                             f"サーバーは{status}だよ！\n"
@@ -409,17 +360,16 @@ class MinecraftBot(commands.Bot):
                         await channel.send(
                             f"サーバーは{status}だよ！\n"
                             f"IPアドレスは {ip_address} だよ！\n"
-                            f"でも、Minecraftサーバーが応答してくれないよ... エラー: {str(e)}"
+                            f"マイクラサーバーに接続できなかったみたい..."
                         )
                 else:
-                    await channel.send(f"サーバーは{status}だよ！でも、IPアドレスが見つからないよ...")
-                    logging.error("IP address not found in instance information")
+                    await channel.send(f"サーバーは{status}だけど、IPアドレスが見つからないよ...")
             else:
                 await channel.send(f"サーバーは{status}だよ！")
 
         except Exception as e:
-            logging.exception("Error in check_status")
-            await channel.send(f"エラーが発生しちゃった... : {str(e)}")
+            await channel.send(f"サーバーの状態確認中にエラーが発生しちゃった... : {str(e)}")
+            logging.exception(f"Error in check_status: {str(e)}")
 
 bot = MinecraftBot()
 

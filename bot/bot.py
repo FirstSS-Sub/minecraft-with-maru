@@ -24,7 +24,6 @@ from config import (
 import datetime
 from datetime import timezone
 import aiohttp
-import logging
 
 logging.basicConfig(
     level=logging.INFO,

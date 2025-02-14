@@ -147,9 +147,35 @@ class MinecraftBot(commands.Bot):
                 instance=self.instance_name
             )
 
-            # SSHでワールドデータを圧縮
-            ip_address = instance.network_interfaces[0].access_configs[0].nat_ip
+            # IPアドレスの取得
+            ip_address = None
+            for interface in instance.network_interfaces:
+                if hasattr(interface, 'access_configs') and interface.access_configs:
+                    config = interface.access_configs[0]
+                    ip_address = getattr(config, 'external_ipv4', None)
+                    if ip_address:
+                        break
+
+            # メタデータサーバーからIPアドレスを取得
+            if not ip_address:
+                try:
+                    metadata_url = "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
+                    headers = {"Metadata-Flavor": "Google"}
+                    response = requests.get(metadata_url, headers=headers, timeout=5)
+                    if response.status_code == 200:
+                        ip_address = response.text.strip()
+                        logging.info(f"IP address from metadata: {ip_address}")
+                except Exception as e:
+                    logging.error(f"Error fetching IP from metadata: {str(e)}")
+
+            if not ip_address:
+                logging.error("IP address not found")
+                await self.get_channel(CHANNEL_ID).send("バックアップ中にエラーが発生しちゃった... IPアドレスが見つからないよ")
+                return False
+
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+
+            # SSHでワールドデータを圧縮
             remote_commands = [
                 'cd /minecraft/server',
                 'tar -czf /tmp/world_backup.tar.gz world',
@@ -180,7 +206,8 @@ class MinecraftBot(commands.Bot):
             return True
 
         except Exception as e:
-            print(f"バックアップ中にエラーが発生しました: {str(e)}")
+            logging.exception(f"バックアップ中にエラーが発生しました: {str(e)}")
+            await self.get_channel(CHANNEL_ID).send(f"バックアップ中にエラーが発生しちゃった... : {str(e)}")
             return False
 
     async def stop_server(self):

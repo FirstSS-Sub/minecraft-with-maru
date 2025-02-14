@@ -328,8 +328,9 @@ class MinecraftBot(commands.Bot):
                     if interface.access_configs:
                         for config in interface.access_configs:
                             logging.info(f"Access config: {config}")
-                            if config.type == 'ONE_TO_ONE_NAT':
-                                ip_address = config.nat_ip
+                            # 'nat_ip' の代わりに 'external_ipv4' を使用
+                            ip_address = getattr(config, 'external_ipv4', None)
+                            if ip_address:
                                 break
                     if ip_address:
                         break

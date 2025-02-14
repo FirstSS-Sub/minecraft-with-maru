@@ -24,6 +24,7 @@ from config import (
 import datetime
 from datetime import timezone
 import aiohttp
+import math
 
 logging.basicConfig(
     level=logging.INFO,
@@ -138,37 +139,8 @@ class MinecraftBot(commands.Bot):
             logging.exception("Error in start_server")
             await self.get_channel(CHANNEL_ID).send(f"エラーが発生しちゃった... : {str(e)}")
 
-    async def backup_world(self):
-        try:
-            # GCSクライアントの初期化
-            storage_client = storage.Client()
-            bucket = storage_client.bucket('your-bucket-name')
-
-            # バックアップファイルの作成
-            backup_filename = f"world_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tar.gz"
-            minecraft_dir = "/path/to/minecraft/server"  # Minecraftサーバーのディレクトリを指定してね
-            os.system(f"tar -czf /tmp/{backup_filename} -C {minecraft_dir} world")
-
-            # GCSへのアップロード
-            blob = bucket.blob(f"backups/{backup_filename}")
-            blob.upload_from_filename(f"/tmp/{backup_filename}")
-
-            # 一時ファイルの削除
-            os.remove(f"/tmp/{backup_filename}")
-
-            await self.get_channel(CHANNEL_ID).send(f"ワールドのバックアップが完了したよ！ファイル名は {backup_filename} だよ！")
-            return True
-        except Exception as e:
-            logging.exception(f"バックアップ中にエラーが発生しました: {str(e)}")
-            await self.get_channel(CHANNEL_ID).send(f"バックアップ中にエラーが起きちゃったみたい...\n{str(e)}")
-            return False
-
     async def stop_server(self):
         try:
-            # バックアップを実行
-            backup_success = await self.backup_world()
-            backup_message = "バックアップ成功だよ！" if backup_success else "バックアップ失敗しちゃった..."
-
             # コスト計算
             cost_info = await self.calculate_costs()
 
@@ -180,15 +152,39 @@ class MinecraftBot(commands.Bot):
             operation = self.instance_client.stop(request=request)
             operation.result()
 
+            # GCSからバックアップファイル名を取得
+            backup_filename = await self.get_backup_filename()
+            backup_message = f"バックアップファイル名は {backup_filename} だよ！" if backup_filename else "バックアップファイル名を取得できなかったよ..."
+
             await self.get_channel(CHANNEL_ID).send(
                 f"サーバーを停止したよ！\n"
-                f"バックアップ: {backup_message}\n"
+                f"{backup_message}\n"
                 f"今回の稼働時間は {cost_info['runtime']} だったよ！\n"
                 f"今回の費用は ¥{cost_info['session_cost']:.2f} になったよ！\n"
             )
 
         except Exception as e:
             await self.get_channel(CHANNEL_ID).send(f"エラーが発生しちゃった... : {str(e)}")
+
+    async def get_backup_filename(self):
+        try:
+            bucket_name = "your-gcs-bucket-name"
+            bucket = self.storage_client.bucket(bucket_name)
+            blobs = list(bucket.list_blobs(prefix="backups/"))
+            if not blobs:
+                return None
+
+            # 最新のバックアップファイルを取得
+            latest_blob = max(blobs, key=lambda blob: blob.time_created)
+
+            # メタデータからファイル名を取得
+            if 'backup_file' in latest_blob.metadata:
+                return latest_blob.metadata['backup_file']
+            else:
+                return None
+        except Exception as e:
+            logging.exception(f"GCSからのファイル名取得中にエラーが発生しました: {str(e)}")
+            return None
 
     async def check_server_status(self):
         await self.wait_until_ready()
@@ -282,9 +278,13 @@ class MinecraftBot(commands.Bot):
             instance=self.instance_name
         )
 
-        start_time = datetime.datetime.fromisoformat(instance.last_start_timestamp)
-        runtime = datetime.datetime.now(timezone.utc) - start_time.replace(tzinfo=timezone.utc)
-        hours = runtime.total_seconds() / 3600
+        start_time = datetime.fromisoformat(instance.last_start_timestamp.replace('Z', '+00:00'))
+        current_time = datetime.now(timezone.utc)
+        runtime = current_time - start_time
+
+        # 分単位で切り上げ
+        minutes = math.ceil(runtime.total_seconds() / 60)
+        hours = minutes / 60
 
         # 現在のレートを取得
         rates = await self.get_current_rates()

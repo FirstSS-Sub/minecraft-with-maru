@@ -135,7 +135,28 @@ resource "google_compute_instance" "minecraft" {
 
   metadata = {
     startup-script-url  = "gs://${google_storage_bucket.minecraft.name}/${google_storage_bucket_object.startup_script.name}"
-    shutdown-script = "systemctl stop minecraft"
+    shutdown-script = <<-EOF
+      #!/bin/bash
+      BUCKET_NAME="${google_storage_bucket.minecraft_backups.name}"
+      MINECRAFT_DIR="/path/to/minecraft/server"
+      BACKUP_NAME="world_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+      GCS_PATH="gs://$BUCKET_NAME/backups/$BACKUP_NAME"
+
+      # ワールドデータをバックアップ
+      tar -czf /tmp/$BACKUP_NAME -C $MINECRAFT_DIR world
+
+      # GCSにアップロード
+      gsutil cp /tmp/$BACKUP_NAME $GCS_PATH
+
+      # メタデータにファイル名を保存
+      gsutil setmeta -h "metadata:backup_file=$BACKUP_NAME" $GCS_PATH
+
+      # 一時ファイルを削除
+      rm /tmp/$BACKUP_NAME
+
+      # Minecraftサーバーを停止
+      systemctl stop minecraft
+    EOF
   }
 
   tags = ["minecraft-server"]

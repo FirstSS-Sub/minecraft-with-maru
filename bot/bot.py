@@ -278,8 +278,8 @@ class MinecraftBot(commands.Bot):
             instance=self.instance_name
         )
 
-        start_time = datetime.fromisoformat(instance.last_start_timestamp.replace('Z', '+00:00'))
-        current_time = datetime.now(timezone.utc)
+        start_time = datetime.datetime.fromisoformat(instance.last_start_timestamp.replace('Z', '+00:00'))
+        current_time = datetime.datetime.now(timezone.utc)
         runtime = current_time - start_time
 
         # 分単位で切り上げ

@@ -67,6 +67,6 @@ WantedBy=multi-user.target
 EOL
 
 # サービスの有効化と起動
-sudo systemctl daemon-reload
-sudo systemctl enable discord-bot
-sudo systemctl start discord-bot
+# sudo systemctl daemon-reload
+# sudo systemctl enable discord-bot
+# sudo systemctl start discord-bot

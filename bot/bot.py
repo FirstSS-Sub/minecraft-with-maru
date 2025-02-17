@@ -16,6 +16,7 @@ from config import (
     GCP_PROJECT_ID,
     INSTANCE_NAME,
     ZONE,
+    BUCKET_NAME,
     START_EMOJI_ID,
     STOP_EMOJI_ID,
     STATUS_EMOJI_ID,
@@ -96,6 +97,9 @@ class MinecraftBot(commands.Bot):
             operation = self.instance_client.start(request=request)
             operation.result()  # 完了を待つ
 
+            # 起動後、IPアドレスが割り当てられるまで少し待つ
+            await asyncio.sleep(10)  # 10秒待機 (必要に応じて調整)
+
             # IPアドレスの取得
             instance = self.instance_client.get(
                 project=self.project_id,
@@ -111,18 +115,6 @@ class MinecraftBot(commands.Bot):
                     ip_address = getattr(config, 'external_ipv4', None)
                     if ip_address:
                         break
-
-            # メタデータサーバーからIPアドレスを取得
-            if not ip_address:
-                try:
-                    metadata_url = "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
-                    headers = {"Metadata-Flavor": "Google"}
-                    response = requests.get(metadata_url, headers=headers, timeout=5)
-                    if response.status_code == 200:
-                        ip_address = response.text.strip()
-                        logging.info(f"IP address from metadata: {ip_address}")
-                except Exception as e:
-                    logging.error(f"Error fetching IP from metadata: {str(e)}")
 
             if ip_address:
                 await self.get_channel(CHANNEL_ID).send(
@@ -168,8 +160,7 @@ class MinecraftBot(commands.Bot):
 
     async def get_backup_filename(self):
         try:
-            bucket_name = "your-gcs-bucket-name"
-            bucket = self.storage_client.bucket(bucket_name)
+            bucket = self.storage_client.bucket(BUCKET_NAME)
             blobs = list(bucket.list_blobs(prefix="backups/"))
             if not blobs:
                 return None
@@ -197,19 +188,47 @@ class MinecraftBot(commands.Bot):
                 )
 
                 if instance.status == "RUNNING":
-                    # サーバーが稼働中の場合、プレイヤー数をチェック
-                    ip_address = instance.network_interfaces[0].access_configs[0].nat_ip
-                    server = JavaServer(ip_address, 25565)
-                    status = server.status()
+                    # IPアドレスの取得
+                    ip_address = None
+                    for interface in instance.network_interfaces:
+                        if hasattr(interface, 'access_configs') and interface.access_configs:
+                            config = interface.access_configs[0]
+                            # 'nat_ip'の代わりに'external_ipv4'を使用
+                            ip_address = getattr(config, 'external_ipv4', None)
+                            if ip_address:
+                                break
 
-                    if status.players.online == 0:
-                        if self.last_player_time is None:
-                            self.last_player_time = datetime.datetime.now()
-                        elif (datetime.datetime.now() - self.last_player_time).total_seconds() > 300:  # 5分
-                            await self.stop_server()
-                            self.last_player_time = None
+                    if ip_address:
+                        try:
+                            server = JavaServer(ip_address, 25565, timeout=5)  # タイムアウトを5秒に設定
+                            status_info = await server.async_status() # async対応
+                            player_count = status_info.players.online
+                            await self.get_channel(CHANNEL_ID).send(
+                                f"サーバーは稼働中だよ！\n"
+                                f"IPアドレスは {ip_address} だよ！\n"
+                                f"今は {player_count}人が遊んでるよ！"
+                            )
+
+                            # サーバーが稼働中の場合、プレイヤー数をチェック
+                            if status_info.players.online == 0:
+                                if self.last_player_time is None:
+                                    self.last_player_time = datetime.datetime.now()
+                                elif (datetime.datetime.now() - self.last_player_time).total_seconds() > 300:  # 5分
+                                    await self.stop_server()
+                                    self.last_player_time = None
+                            else:
+                                self.last_player_time = None
+
+                        except Exception as e:
+                            await self.get_channel(CHANNEL_ID).send(
+                                f"サーバーは稼働中だよ！\n"
+                                f"IPアドレスは {ip_address} だよ！\n"
+                                f"マイクラサーバーに接続できなかったみたい..."
+                            )
                     else:
-                        self.last_player_time = None
+                        await self.get_channel(CHANNEL_ID).send(f"サーバーは稼働中だけど、IPアドレスが見つからないよ...")
+                else:
+                    await self.get_channel(CHANNEL_ID).send(f"サーバーは停止中だよ！")
 
             except Exception as e:
                 print(f"Error checking server status: {str(e)}")
@@ -246,7 +265,6 @@ class MinecraftBot(commands.Bot):
             rates = {k: v * exchange_rate for k, v in rates.items()}
 
             return rates
-
         except Exception as e:
             print(f"料金レート取得エラー: {str(e)}")
             # エラー時のデフォルト値を設定
@@ -334,18 +352,6 @@ class MinecraftBot(commands.Bot):
                                 break
                     if ip_address:
                         break
-
-                # メタデータサーバーからIPアドレスを取得する試み
-                if not ip_address:
-                    try:
-                        metadata_url = "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
-                        headers = {"Metadata-Flavor": "Google"}
-                        response = requests.get(metadata_url, headers=headers, timeout=5)
-                        if response.status_code == 200:
-                            ip_address = response.text.strip()
-                            logging.info(f"IP address from metadata: {ip_address}")
-                    except Exception as e:
-                        logging.error(f"Error fetching IP from metadata: {str(e)}")
 
                 if ip_address:
                     try:

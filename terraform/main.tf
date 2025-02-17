@@ -89,7 +89,7 @@ resource "google_compute_disk" "minecraft" {
 # Compute Engineインスタンス
 resource "google_compute_instance" "minecraft" {
   name         = var.instance_name
-  machine_type = "e2-standard-2"
+  machine_type = "e2-custom-2-4096"
   zone         = var.zone
 
   scheduling {
@@ -132,24 +132,7 @@ resource "google_compute_instance" "minecraft" {
       # Java 21をデフォルトに設定
       sudo update-alternatives --set java /usr/lib/jvm/java-21-openjdk-amd64/bin/java
 
-      # Forgeのダウンロードとインストール
-      FORGE_VERSION="1.21.4-54.1.0"
-      FORGE_INSTALLER="forge-$FORGE_VERSION-installer.jar"
-      FORGE_JAR="forge-$FORGE_VERSION-server.jar"
-
-      wget -O $FORGE_INSTALLER "https://maven.minecraftforge.net/net/minecraftforge/forge/$FORGE_VERSION/forge-$FORGE_VERSION-installer.jar"
-      yes | java -jar $FORGE_INSTALLER --installServer
-
-      # シムJARファイルを正しい名前にリネーム
-      if [ -f "forge-$FORGE_VERSION-shim.jar" ]; then
-          mv "forge-$FORGE_VERSION-shim.jar" "$FORGE_JAR"
-      fi
-
-      # Complementary Unbound Shadersのダウンロードと配置
-      SHADER_URL="https://cdn.modrinth.com/data/R6NEzAwj/versions/Z1zqMzjh/ComplementaryUnbound_r5.4.zip"
-      wget -O ComplementaryUnbound.zip "$SHADER_URL"
-      mkdir -p $SERVER_DIR/shaderpacks
-      yes | unzip -o ComplementaryUnbound.zip -d $SERVER_DIR/shaderpacks/
+      wget https://piston-data.mojang.com/v1/objects/4707d00eb834b446575d89a61a11b5d548d8c001/server.jar
 
       # EULAに同意
       echo "eula=true" > eula.txt
@@ -161,6 +144,14 @@ resource "google_compute_instance" "minecraft" {
           sed -i '/^online-mode=/c\online-mode=false' server.properties
       fi
 
+      # Google Cloud SDKのインストール
+      sudo snap remove google-cloud-cli
+      sudo rm -f /usr/share/keyrings/cloud.google.gpg
+      echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+      curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+      sudo apt-get update
+      sudo apt-get install google-cloud-cli -y
+
       # systemdサービスファイルの作成
       sudo sh -c "cat > /etc/systemd/system/minecraft.service <<EOL
       [Unit]
@@ -171,7 +162,7 @@ resource "google_compute_instance" "minecraft" {
       User=$USER
       Group=$USER
       WorkingDirectory=$SERVER_DIR
-      ExecStart=/usr/lib/jvm/java-21-openjdk-amd64/bin/java -Xms2G -Xmx4G -jar $FORGE_JAR nogui
+      ExecStart=/usr/lib/jvm/java-21-openjdk-amd64/bin/java -Xms1G -Xmx3G -jar server.jar nogui
       Restart=on-failure
       RestartSec=10s
 
@@ -179,8 +170,38 @@ resource "google_compute_instance" "minecraft" {
       WantedBy=multi-user.target
       EOL"
 
+      # backup.sh 作成
+      sudo sh -c 'cat > $SERVER_DIR/backup.sh <<EOL
+      #!/bin/sh
+      BUCKET_NAME="${google_storage_bucket.minecraft_backups.name}"
+      MINECRAFT_DIR="/opt/minecraft_server"
+      BACKUP_NAME="world_backup.tar.gz"
+      GCS_PATH="gs://$BUCKET_NAME/backups/$BACKUP_NAME"
+      TEMP_DIR="$(mktemp -d)"
+
+      echo "バックアップを作成します"
+      sudo tar -czf "$TEMP_DIR/$BACKUP_NAME" -C "$MINECRAFT_DIR" world || {
+          echo "バックアップの作成に失敗しました"
+          exit 1
+      }
+
+      echo "GCSにアップロードします"
+      gsutil -o GSUtil:parallel_composite_upload_threshold=150M cp "$TEMP_DIR/$BACKUP_NAME" "$GCS_PATH" || {
+          echo "GCSへのアップロードに失敗しました"
+          exit 1
+      }
+
+      echo "メタデータを設定します"
+      gsutil setmeta -h "x-goog-meta-metadata:backup_file=$BACKUP_NAME" "$GCS_PATH" || echo "メタデータの設定に失敗しました"
+
+      echo "クリーンアップを行います"
+      rm -f "$TEMP_DIR/$BACKUP_NAME"
+      rmdir "$TEMP_DIR"
+      EOL'
+
       # ファイルのパーミッション設定
-      chmod +x $FORGE_JAR
+      chmod +x server.jar
+      chmod +x backup.sh
 
       # サービスの有効化と起動
       sudo systemctl daemon-reload
@@ -199,33 +220,29 @@ resource "google_compute_instance" "minecraft" {
 
     shutdown-script = <<-EOF
       #!/bin/bash
-      BUCKET_NAME="${google_storage_bucket.minecraft_backups.name}"
-      MINECRAFT_DIR="/path/to/minecraft/server"
-      BACKUP_NAME="world_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
-      GCS_PATH="gs://$BUCKET_NAME/backups/$BACKUP_NAME"
+      nohup bash -c '
+      set -e
+      exec > >(tee /var/log/shutdown-script.log) 2>&1
 
-      # ワールドデータをバックアップ
-      tar -czf /tmp/$BACKUP_NAME -C $MINECRAFT_DIR world
+      MINECRAFT_DIR="/opt/minecraft_server"
 
-      # GCSにアップロード
-      gsutil cp /tmp/$BACKUP_NAME $GCS_PATH
+      echo "シャットダウンスクリプトを開始します"
+      echo "Minecraftサーバーを停止します"
+      sudo systemctl stop minecraft || echo "Minecraftサーバーの停止に失敗しました"
 
-      # メタデータにファイル名を保存
-      gsutil setmeta -h "metadata:backup_file=$BACKUP_NAME" $GCS_PATH
+      sh $MINECRAFT_DIR/backup.sh
 
-      # 一時ファイルを削除
-      rm /tmp/$BACKUP_NAME
-
-      # Minecraftサーバーを停止
-      systemctl stop minecraft
+      echo "シャットダウンスクリプトが正常に完了しました"
+      ' > /dev/null 2>&1 &
     EOF
+    shutdown-script-timeout = "300" # 5分に延長
   }
 
   tags = ["minecraft-server"]
 
   service_account {
     email  = data.google_service_account.minecraft.email
-    scopes = ["storage-rw", "compute-ro"]  # GCSアクセス用とインスタンス情報取得用のスコープ
+    scopes = ["storage-rw", "compute-ro", "https://www.googleapis.com/auth/devstorage.full_control"]  # GCSアクセス用とインスタンス情報取得用のスコープ
   }
 }
 

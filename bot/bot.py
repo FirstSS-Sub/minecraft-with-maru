@@ -98,7 +98,7 @@ class MinecraftBot(commands.Bot):
             operation.result()  # 完了を待つ
 
             # 起動後、IPアドレスが割り当てられるまで少し待つ
-            await asyncio.sleep(10)  # 10秒待機 (必要に応じて調整)
+            await asyncio.sleep(1)  # (必要に応じて調整)
 
             # IPアドレスの取得
             instance = self.instance_client.get(
@@ -111,8 +111,7 @@ class MinecraftBot(commands.Bot):
             for interface in instance.network_interfaces:
                 if hasattr(interface, 'access_configs') and interface.access_configs:
                     config = interface.access_configs[0]
-                    # 'nat_ip'の代わりに'external_ipv4'を使用
-                    ip_address = getattr(config, 'external_ipv4', None)
+                    ip_address = getattr(config, 'nat_i_p', None) or getattr(config, 'external_ipv4', None)
                     if ip_address:
                         break
 
@@ -128,8 +127,8 @@ class MinecraftBot(commands.Bot):
                 logging.error("IP address not found")
 
         except Exception as e:
-            logging.exception("Error in start_server")
-            await self.get_channel(CHANNEL_ID).send(f"エラーが発生しちゃった... : {str(e)}")
+            logging.error(f"Error in start_server: {e}")
+            await self.get_channel(CHANNEL_ID).send(f"サーバーの起動中にエラーが発生したよ...")
 
     async def stop_server(self):
         try:
@@ -178,62 +177,61 @@ class MinecraftBot(commands.Bot):
             return None
 
     async def check_server_status(self):
-        await self.wait_until_ready()
-        while not self.is_closed():
-            try:
-                instance = self.instance_client.get(
-                    project=self.project_id,
-                    zone=self.zone,
-                    instance=self.instance_name
-                )
+        try:
+            instance = self.instance_client.get(
+                project=self.project_id,
+                zone=self.zone,
+                instance=self.instance_name
+            )
 
-                if instance.status == "RUNNING":
-                    # IPアドレスの取得
-                    ip_address = None
-                    for interface in instance.network_interfaces:
-                        if hasattr(interface, 'access_configs') and interface.access_configs:
-                            config = interface.access_configs[0]
-                            # 'nat_ip'の代わりに'external_ipv4'を使用
-                            ip_address = getattr(config, 'external_ipv4', None)
-                            if ip_address:
-                                break
+            logging.info(f"Instance status: {instance.status}")
+            logging.info(f"Network interfaces: {instance.network_interfaces}")
 
-                    if ip_address:
-                        try:
-                            server = JavaServer(ip_address, 25565, timeout=5)  # タイムアウトを5秒に設定
-                            status_info = await server.async_status() # async対応
-                            player_count = status_info.players.online
-                            await self.get_channel(CHANNEL_ID).send(
-                                f"サーバーは稼働中だよ！\n"
-                                f"IPアドレスは {ip_address} だよ！\n"
-                                f"今は {player_count}人が遊んでるよ！"
-                            )
+            if instance.status == "RUNNING":
+                ip_address = None
+                for interface in instance.network_interfaces:
+                    if hasattr(interface, 'access_configs') and interface.access_configs:
+                        config = interface.access_configs[0]
+                        ip_address = getattr(config, 'nat_i_p', None) or getattr(config, 'external_ipv4', None)
+                        if ip_address:
+                            break
 
-                            # サーバーが稼働中の場合、プレイヤー数をチェック
-                            if status_info.players.online == 0:
-                                if self.last_player_time is None:
-                                    self.last_player_time = datetime.datetime.now()
-                                elif (datetime.datetime.now() - self.last_player_time).total_seconds() > 300:  # 5分
-                                    await self.stop_server()
-                                    self.last_player_time = None
-                            else:
+                if ip_address:
+                    try:
+                        server = JavaServer(ip_address, 25565, timeout=5)
+                        status_info = await server.async_status()
+                        player_count = status_info.players.online
+                        await self.get_channel(self.CHANNEL_ID).send(
+                            f"サーバーは稼働中だよ！\n"
+                            f"IPアドレスは {ip_address} だよ！\n"
+                            f"今は {player_count}人が遊んでるよ！"
+                        )
+
+                        if status_info.players.online == 0:
+                            if self.last_player_time is None:
+                                self.last_player_time = datetime.datetime.now()
+                            elif (datetime.datetime.now() - self.last_player_time).total_seconds() > 300:  # 5分
+                                await self.stop_server()
                                 self.last_player_time = None
+                        else:
+                            self.last_player_time = None
 
-                        except Exception as e:
-                            await self.get_channel(CHANNEL_ID).send(
-                                f"サーバーは稼働中だよ！\n"
-                                f"IPアドレスは {ip_address} だよ！\n"
-                                f"マイクラサーバーに接続できなかったみたい..."
-                            )
-                    else:
-                        await self.get_channel(CHANNEL_ID).send(f"サーバーは稼働中だけど、IPアドレスが見つからないよ...")
+                    except Exception as e:
+                        logging.error(f"Error connecting to Minecraft server: {e}")
+                        await self.get_channel(self.CHANNEL_ID).send(
+                            f"サーバーは稼働中だよ！\n"
+                            f"IPアドレスは {ip_address} だよ！\n"
+                            f"マイクラサーバーに接続できなかったみたい..."
+                        )
                 else:
-                    await self.get_channel(CHANNEL_ID).send(f"サーバーは停止中だよ！")
+                    logging.error("IP address not found in instance details")
+                    await self.get_channel(self.CHANNEL_ID).send(f"サーバーは稼働中だけど、IPアドレスが見つからないよ...")
+            else:
+                await self.get_channel(self.CHANNEL_ID).send(f"サーバーは停止中だよ！")
 
-            except Exception as e:
-                print(f"Error checking server status: {str(e)}")
-
-            await asyncio.sleep(60)  # 1分ごとにチェック
+        except Exception as e:
+            logging.error(f"Error in check_server_status: {e}")
+            await self.get_channel(self.CHANNEL_ID).send(f"サーバーの状態確認中にエラーが発生したよ...")
 
     async def get_current_rates(self):
         """現在の料金レートを取得する"""
